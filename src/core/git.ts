@@ -15,7 +15,11 @@ import {
   measureAddedComments,
   type AddedCommentStats,
 } from "./comment-density.js";
-import { groupCommentBlocks, scanComments } from "./comments.js";
+import {
+  commentScanOptionsForPath,
+  groupCommentBlocks,
+  scanComments,
+} from "./comments.js";
 import { parseUnifiedDiff } from "./diff.js";
 import {
   isCodecutManagedGeneratedFile,
@@ -513,7 +517,9 @@ export async function inspectAddedComments(
     }
     stats.push(measureAddedComments(relativePath, file.addedLines));
     blocks.push(
-      ...groupCommentBlocks(scanComments(file.addedLines)).map((block) => ({
+      ...groupCommentBlocks(
+        scanComments(file.addedLines, commentScanOptionsForPath(relativePath)),
+      ).map((block) => ({
         path: relativePath,
         comments: block.map((comment) => comment.text),
       })),
@@ -552,7 +558,9 @@ export async function inspectAddedComments(
       .map((text, index) => ({ line: index + 1, text }));
     stats.push(measureAddedComments(relativePath, lines));
     blocks.push(
-      ...groupCommentBlocks(scanComments(lines)).map((block) => ({
+      ...groupCommentBlocks(
+        scanComments(lines, commentScanOptionsForPath(relativePath)),
+      ).map((block) => ({
         path: relativePath,
         comments: block.map((comment) => comment.text),
       })),
