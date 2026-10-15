@@ -37,6 +37,25 @@ export type InspectedAddedComments = {
   stats: AddedCommentStats[];
 };
 
+export type AddedCommentInspectionOptions = {
+  /** Skip files last modified before this time; they predate the session. */
+  since?: Date;
+};
+
+async function modifiedBefore(
+  absolutePath: string,
+  since: Date | undefined,
+): Promise<boolean> {
+  if (!since) {
+    return false;
+  }
+  try {
+    return (await lstat(absolutePath)).mtimeMs < since.getTime();
+  } catch {
+    return false;
+  }
+}
+
 const COMMENT_INSPECTION_MAX_BYTES = 1024 * 1024;
 
 const execFileAsync = promisify(execFile);
@@ -482,6 +501,7 @@ export async function findGitRoot(cwd: string): Promise<string | undefined> {
 
 export async function inspectAddedComments(
   cwd: string,
+  options: AddedCommentInspectionOptions = {},
 ): Promise<InspectedAddedComments> {
   const projectRoot = await realpath(cwd);
   const gitRoot = (
@@ -515,6 +535,14 @@ export async function inspectAddedComments(
     if (await isManagedGeneratedProjectFile(projectRoot, relativePath)) {
       continue;
     }
+    if (
+      await modifiedBefore(
+        path.resolve(projectRoot, relativePath),
+        options.since,
+      )
+    ) {
+      continue;
+    }
     stats.push(measureAddedComments(relativePath, file.addedLines));
     blocks.push(
       ...groupCommentBlocks(
@@ -541,7 +569,9 @@ export async function inspectAddedComments(
     if (
       !fileStats.isFile() ||
       fileStats.isSymbolicLink() ||
-      fileStats.size > COMMENT_INSPECTION_MAX_BYTES
+      fileStats.size > COMMENT_INSPECTION_MAX_BYTES ||
+      (options.since !== undefined &&
+        fileStats.mtimeMs < options.since.getTime())
     ) {
       continue;
     }
@@ -571,8 +601,9 @@ export async function inspectAddedComments(
 
 export async function inspectAddedCommentBlocks(
   cwd: string,
+  options: AddedCommentInspectionOptions = {},
 ): Promise<AddedCommentBlock[]> {
-  return (await inspectAddedComments(cwd)).blocks;
+  return (await inspectAddedComments(cwd, options)).blocks;
 }
 
 export async function inspectDiff(

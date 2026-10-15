@@ -374,6 +374,14 @@ export async function runHook(
     }
     await appendReceipts(eventsFile, newReceipts);
     receipts = [...receipts, ...newReceipts];
+    // Nothing is written before the first pre-tool receipt, so its timestamp
+    // bounds which files this session could have produced.
+    const sessionStartedAt = new Date(
+      Math.min(
+        Date.parse(event.occurredAt),
+        ...receipts.map((receipt) => Date.parse(receipt.timestamp)),
+      ),
+    );
     const inspectReadyPr =
       event.stage === "stop" &&
       policy.rules.some(
@@ -392,7 +400,7 @@ export async function runHook(
         ? inspectDiff(diffRoot, receipts)
         : undefined,
       event.stage === "stop"
-        ? inspectAddedComments(diffRoot)
+        ? inspectAddedComments(diffRoot, { since: sessionStartedAt })
         : { blocks: [], stats: [] },
       inspectReadyPr ? inspectGithubPullRequest(diffRoot) : undefined,
       inspectPrePushLint(policy, event, diffRoot),
