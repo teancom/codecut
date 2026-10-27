@@ -344,6 +344,17 @@ export async function runHook(
     }
 
     let receipts = await readSessionReceipts(eventsFile, event.sessionId);
+    // Nothing is written before the first pre-tool receipt, so its timestamp
+    // bounds which files this session could have produced. With no earlier
+    // receipts (an agent that only wires the stop hook) there is no bound.
+    const sessionStartedAt =
+      receipts.length > 0
+        ? new Date(
+            Math.min(
+              ...receipts.map((receipt) => Date.parse(receipt.timestamp)),
+            ),
+          )
+        : undefined;
     const newReceipts = deriveReceipts(policy, event);
     if (
       newReceipts.some(
@@ -374,14 +385,6 @@ export async function runHook(
     }
     await appendReceipts(eventsFile, newReceipts);
     receipts = [...receipts, ...newReceipts];
-    // Nothing is written before the first pre-tool receipt, so its timestamp
-    // bounds which files this session could have produced.
-    const sessionStartedAt = new Date(
-      Math.min(
-        Date.parse(event.occurredAt),
-        ...receipts.map((receipt) => Date.parse(receipt.timestamp)),
-      ),
-    );
     const inspectReadyPr =
       event.stage === "stop" &&
       policy.rules.some(
@@ -397,7 +400,7 @@ export async function runHook(
       pushLintEvidence,
     ] = await Promise.all([
       event.stage === "stop" || event.stage === "agent-response"
-        ? inspectDiff(diffRoot, receipts)
+        ? inspectDiff(diffRoot, receipts, { since: sessionStartedAt })
         : undefined,
       event.stage === "stop"
         ? inspectAddedComments(diffRoot, { since: sessionStartedAt })

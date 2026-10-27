@@ -37,7 +37,7 @@ export type InspectedAddedComments = {
   stats: AddedCommentStats[];
 };
 
-export type AddedCommentInspectionOptions = {
+export type WorkingTreeInspectionOptions = {
   /** Skip files last modified before this time; they predate the session. */
   since?: Date;
 };
@@ -461,17 +461,15 @@ async function countCurrentFileLines(
   return { paths, added, complete };
 }
 
-function parseNumstat(output: string): {
-  paths: Set<string>;
-  added: number;
-  deleted: number;
-  complete: boolean;
-} {
-  const paths = new Set<string>();
-  let added = 0;
-  let deleted = 0;
-  let complete = true;
+type NumstatEntry = {
+  path: string;
+  /** Undefined for binary files, which numstat reports as `-`. */
+  added?: number;
+  deleted?: number;
+};
 
+function parseNumstatEntries(output: string): NumstatEntry[] {
+  const entries: NumstatEntry[] = [];
   for (const line of output.split(/\r?\n/)) {
     if (line.trim().length === 0) {
       continue;
@@ -481,16 +479,60 @@ function parseNumstat(output: string): {
     if (!addedValue || !deletedValue || !changedPath) {
       continue;
     }
-    paths.add(changedPath);
-    if (addedValue === "-" || deletedValue === "-") {
+    entries.push(
+      addedValue === "-" || deletedValue === "-"
+        ? { path: changedPath }
+        : {
+            path: changedPath,
+            added: Number.parseInt(addedValue, 10) || 0,
+            deleted: Number.parseInt(deletedValue, 10) || 0,
+          },
+    );
+  }
+  return entries;
+}
+
+function aggregateNumstat(entries: NumstatEntry[]): {
+  paths: Set<string>;
+  added: number;
+  deleted: number;
+  complete: boolean;
+} {
+  const paths = new Set<string>();
+  let added = 0;
+  let deleted = 0;
+  let complete = true;
+  for (const entry of entries) {
+    paths.add(entry.path);
+    if (entry.added === undefined || entry.deleted === undefined) {
       complete = false;
       continue;
     }
-    added += Number.parseInt(addedValue, 10) || 0;
-    deleted += Number.parseInt(deletedValue, 10) || 0;
+    added += entry.added;
+    deleted += entry.deleted;
   }
-
   return { paths, added, deleted, complete };
+}
+
+function parseNumstat(output: string): ReturnType<typeof aggregateNumstat> {
+  return aggregateNumstat(parseNumstatEntries(output));
+}
+
+async function withoutFilesModifiedBefore(
+  root: string,
+  files: string[],
+  since: Date | undefined,
+): Promise<string[]> {
+  if (!since) {
+    return files;
+  }
+  const kept: string[] = [];
+  for (const file of files) {
+    if (!(await modifiedBefore(path.resolve(root, file), since))) {
+      kept.push(file);
+    }
+  }
+  return kept;
 }
 
 export async function findGitRoot(cwd: string): Promise<string | undefined> {
@@ -501,7 +543,7 @@ export async function findGitRoot(cwd: string): Promise<string | undefined> {
 
 export async function inspectAddedComments(
   cwd: string,
-  options: AddedCommentInspectionOptions = {},
+  options: WorkingTreeInspectionOptions = {},
 ): Promise<InspectedAddedComments> {
   const projectRoot = await realpath(cwd);
   const gitRoot = (
@@ -601,7 +643,7 @@ export async function inspectAddedComments(
 
 export async function inspectAddedCommentBlocks(
   cwd: string,
-  options: AddedCommentInspectionOptions = {},
+  options: WorkingTreeInspectionOptions = {},
 ): Promise<AddedCommentBlock[]> {
   return (await inspectAddedComments(cwd, options)).blocks;
 }
@@ -609,6 +651,7 @@ export async function inspectAddedCommentBlocks(
 export async function inspectDiff(
   cwd: string,
   receipts: Receipt[],
+  options: WorkingTreeInspectionOptions = {},
 ): Promise<DiffStats> {
   const state = await workingTreeState(cwd);
   const parsed = parseNumstat("");
@@ -639,16 +682,26 @@ export async function inspectDiff(
         if (againstHead === undefined) {
           parsed.complete = false;
         } else {
-          const currentDiff = parseNumstat(againstHead);
-          for (const filePath of currentDiff.paths) {
+          const entries: NumstatEntry[] = [];
+          for (const entry of parseNumstatEntries(againstHead)) {
             const relativePath = projectRelativePath(
               gitRoot,
               projectRoot,
-              filePath,
+              entry.path,
             );
-            if (relativePath) {
-              parsed.paths.add(relativePath);
+            if (
+              relativePath &&
+              !(await modifiedBefore(
+                path.resolve(gitRoot, entry.path),
+                options.since,
+              ))
+            ) {
+              entries.push({ ...entry, path: relativePath });
             }
+          }
+          const currentDiff = aggregateNumstat(entries);
+          for (const filePath of currentDiff.paths) {
+            parsed.paths.add(filePath);
           }
           parsed.added += currentDiff.added;
           parsed.deleted += currentDiff.deleted;
@@ -658,7 +711,14 @@ export async function inspectDiff(
         if (untracked === undefined) {
           parsed.complete = false;
         } else {
-          const counted = await countCurrentFileLines(projectRoot, untracked);
+          const counted = await countCurrentFileLines(
+            projectRoot,
+            await withoutFilesModifiedBefore(
+              projectRoot,
+              untracked,
+              options.since,
+            ),
+          );
           for (const filePath of counted.paths) {
             parsed.paths.add(filePath);
           }
@@ -673,7 +733,14 @@ export async function inspectDiff(
         if (initialFiles === undefined) {
           parsed.complete = false;
         } else {
-          const counted = await countCurrentFileLines(projectRoot, initialFiles);
+          const counted = await countCurrentFileLines(
+            projectRoot,
+            await withoutFilesModifiedBefore(
+              projectRoot,
+              initialFiles,
+              options.since,
+            ),
+          );
           Object.assign(parsed, counted);
         }
       }
@@ -681,7 +748,11 @@ export async function inspectDiff(
   } else {
     parsed.complete = false;
   }
-  for (const changedPath of state.paths) {
+  for (const changedPath of await withoutFilesModifiedBefore(
+    cwd,
+    state.paths,
+    options.since,
+  )) {
     parsed.paths.add(changedPath);
   }
 

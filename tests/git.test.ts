@@ -268,6 +268,15 @@ describe("working-tree fingerprints", () => {
       "fresh.ts",
       "tracked.ts",
     ]);
+
+    // The blast-radius count applies the same floor: only fresh.ts (5 lines).
+    await expect(
+      inspectDiff(directory, [], { since: sessionStart }),
+    ).resolves.toMatchObject({ files: 1, added: 5, deleted: 0, complete: true });
+    await expect(inspectDiff(directory, [])).resolves.toMatchObject({
+      files: 3,
+      complete: true,
+    });
   });
 
   it("excludes the generated OpenCode plugin from comment density", async () => {
